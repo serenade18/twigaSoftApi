@@ -4,9 +4,9 @@ Django + Django REST Framework API for the AFRIGULF Exchange site (frontend: `..
 
 ## Setup
 
-Requires MySQL 8.0.13+ and the MySQL client libraries (`brew install mysql-client pkgconf` on macOS).
+Requires MySQL 8.0.13+ (Django 5.2 LTS; Django 6 would need MySQL 8.4+) and the MySQL client libraries (`brew install mysql-client pkgconf` on macOS).
 
-Create the database and a user (in `mysql -u root`):
+Create the database and a user (in `mysql -u root`; with AMPPS: `/Applications/AMPPS/apps/mysql/bin/mysql -h127.0.0.1 -uroot -p`):
 
 ```sql
 CREATE DATABASE twigasoft CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
