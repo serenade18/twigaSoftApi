@@ -17,7 +17,7 @@ class AdminSerializer(serializers.Serializer):
         return str(user.pk)
 
     def get_name(self, user):
-        return user.get_full_name() or user.get_username()
+        return user.get_full_name() or user.email
 
 
 class LoginSerializer(serializers.Serializer):
@@ -25,12 +25,12 @@ class LoginSerializer(serializers.Serializer):
     password = serializers.CharField(trim_whitespace=False, max_length=128)
 
     def validate(self, attrs):
-        candidates = get_user_model().objects.filter(email__iexact=attrs['email'], is_active=True, is_staff=True)
-        user = next((u for u in candidates if u.check_password(attrs['password'])), None)
+        User = get_user_model()
+        user = User.objects.filter(email__iexact=attrs['email'], is_active=True, is_staff=True).first()
         if user is None:
-            if not candidates:
-                # Hash anyway so unknown emails take as long as wrong passwords.
-                get_user_model()().set_password(attrs['password'])
+            User().set_password(attrs['password'])  # hash anyway so unknown emails take as long as wrong passwords
+            raise serializers.ValidationError(INVALID_LOGIN)
+        if not user.check_password(attrs['password']):
             raise serializers.ValidationError(INVALID_LOGIN)
         attrs['user'] = user
         return attrs

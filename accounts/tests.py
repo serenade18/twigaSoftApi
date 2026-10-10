@@ -17,8 +17,8 @@ class AdminAuthTests(APITestCase):
     def setUp(self):
         cache.clear()  # throttle counters
         User = get_user_model()
-        self.admin = User.objects.create_user('ahmed', 'admin@example.com', PASSWORD, is_staff=True, first_name='Ahmed')
-        User.objects.create_user('visitor', 'visitor@example.com', PASSWORD)
+        self.admin = User.objects.create_user('admin@example.com', PASSWORD, is_staff=True, first_name='Ahmed')
+        User.objects.create_user('visitor@example.com', PASSWORD)
 
     def login(self, email='admin@example.com', password=PASSWORD):
         return self.client.post('/api/admin/auth/login', {'email': email, 'password': password}, format='json')
@@ -34,6 +34,16 @@ class AdminAuthTests(APITestCase):
             response = self.login(email, password)
             self.assertEqual(response.status_code, 400)
             self.assertEqual(response.data['error'], 'Incorrect email or password.')
+
+    def test_email_is_unique_ignoring_case(self):
+        from django.db import IntegrityError, transaction
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            get_user_model().objects.create_user('Admin@Example.com', PASSWORD)
+
+    def test_create_superuser_is_staff(self):
+        user = get_user_model().objects.create_superuser('owner@example.com', PASSWORD)
+        self.assertTrue(user.is_staff and user.is_superuser)
+        self.assertEqual(self.login('owner@example.com').status_code, 200)
 
     def test_validation_errors_use_error_shape(self):
         response = self.client.post('/api/admin/auth/login', {'email': 'not-an-email'}, format='json')

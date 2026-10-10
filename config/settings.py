@@ -74,11 +74,18 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'config.wsgi.application'
 
-DATABASES = {
-    'default': dj_database_url.parse(
-        os.environ.get('DATABASE_URL') or f'sqlite:///{BASE_DIR / "db.sqlite3"}', conn_max_age=600,
-    ),
-}
+# MySQL, e.g. DATABASE_URL=mysql://twigasoft:password@127.0.0.1:3306/twigasoft
+if not os.environ.get('DATABASE_URL'):
+    raise RuntimeError('Set DATABASE_URL to your MySQL database (see .env.example).')
+DATABASES = {'default': dj_database_url.parse(os.environ['DATABASE_URL'], conn_max_age=600, conn_health_checks=True)}
+if DATABASES['default']['ENGINE'] == 'django.db.backends.mysql':
+    DATABASES['default']['OPTIONS'] = {
+        'charset': 'utf8mb4',
+        'init_command': "SET sql_mode='STRICT_TRANS_TABLES'",
+    }
+    DATABASES['default']['TEST'] = {'CHARSET': 'utf8mb4', 'COLLATION': 'utf8mb4_unicode_ci'}
+
+AUTH_USER_MODEL = 'accounts.User'
 
 AUTH_PASSWORD_VALIDATORS = [
     {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},

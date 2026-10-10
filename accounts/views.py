@@ -57,14 +57,15 @@ class ForgotPasswordView(APIView):
         serializer = ForgotPasswordSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         email = serializer.validated_data['email']
-        for user in get_user_model().objects.filter(email__iexact=email, is_active=True, is_staff=True):
+        user = get_user_model().objects.filter(email__iexact=email, is_active=True, is_staff=True).first()
+        if user is not None:
             link = f'{settings.FRONTEND_URL}/admin/reset-password?token={make_reset_token(user)}'
             minutes = settings.PASSWORD_RESET_TIMEOUT // 60
             try:
                 send_mail(
                     subject='Reset your AFRIGULF Exchange admin password',
                     message=(
-                        f'Hello {user.get_full_name() or user.get_username()},\n\n'
+                        f'Hello {user.get_full_name() or user.email},\n\n'
                         f'Use this link to choose a new password. It expires in {minutes} minutes and works once:\n\n'
                         f'{link}\n\nIf you did not ask for this, you can ignore this email.'
                     ),

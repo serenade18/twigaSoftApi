@@ -4,10 +4,22 @@ Django + Django REST Framework API for the AFRIGULF Exchange site (frontend: `..
 
 ## Setup
 
+Requires MySQL 8.0.13+ and the MySQL client libraries (`brew install mysql-client pkgconf` on macOS).
+
+Create the database and a user (in `mysql -u root`):
+
+```sql
+CREATE DATABASE twigasoft CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER 'twigasoft'@'localhost' IDENTIFIED BY 'change-me';
+GRANT ALL PRIVILEGES ON twigasoft.* TO 'twigasoft'@'localhost';
+GRANT ALL PRIVILEGES ON test_twigasoft.* TO 'twigasoft'@'localhost';  -- for manage.py test
+```
+
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-cp .env.example .env            # then set DJANGO_SECRET_KEY
+# Homebrew's mysql-client is keg-only, so point the mysqlclient build at it:
+PKG_CONFIG_PATH="$(brew --prefix mysql-client)/lib/pkgconfig" .venv/bin/pip install -r requirements.txt
+cp .env.example .env            # then set DJANGO_SECRET_KEY and DATABASE_URL
 .venv/bin/python manage.py migrate
 .venv/bin/python manage.py createsuperuser   # this account can sign in at /admin/login on the site
 .venv/bin/python manage.py runserver 8000
@@ -33,7 +45,7 @@ Errors are a non-2xx status with `{ "error": "<message for the user>", "fields":
 | `POST /api/admin/auth/forgot-password` | – | `{ email }` | `200`, the same whether or not the account exists |
 | `POST /api/admin/auth/reset-password` | – | `{ token, password }` | `200` |
 
-- **Admins** are Django users with `is_staff`; they sign in with their email address.
+- **Admins** are `accounts.User` records (a custom user model with email as the unique, case-insensitive login field) with `is_staff` set.
 - **Tokens** are sent as `Authorization: Bearer <token>`. Each admin has one token; signing in replaces it,
   and it expires after `ADMIN_TOKEN_TTL_HOURS` (default 12).
 - **Password reset** emails link to `FRONTEND_URL/admin/reset-password?token=…`. Links expire after
@@ -49,7 +61,7 @@ which the site shows in order of `sort_order`, and to view enquiries and track t
 
 ## Production
 
-Set `DJANGO_DEBUG=false`, `DJANGO_SECRET_KEY`, `DJANGO_ALLOWED_HOSTS`, `DATABASE_URL` (e.g. Postgres),
+Set `DJANGO_DEBUG=false`, `DJANGO_SECRET_KEY`, `DJANGO_ALLOWED_HOSTS`, `DATABASE_URL` (`mysql://user:pass@host:3306/db`),
 `FRONTEND_URL`, SMTP settings, and `CORS_ALLOWED_ORIGINS` / `CSRF_TRUSTED_ORIGINS` if the site and API
 are on different origins. Run `manage.py collectstatic` and serve with a WSGI server such as gunicorn.
 The rate limits use Django's cache; configure a shared cache (e.g. Redis) if you run several processes.
