@@ -52,6 +52,7 @@ class Event(models.Model):
     cover = models.ImageField(upload_to='events/', blank=True,
                               validators=[FileExtensionValidator(['jpg', 'jpeg', 'png', 'webp'])])
     is_published = models.BooleanField(default=True)
+    is_featured = models.BooleanField(default=False, help_text='Featured events lead the home page.')
     bookings_open = models.BooleanField(default=True, help_text='Visitors can book seats while the event is upcoming and not full.')
     capacity = models.PositiveIntegerField(null=True, blank=True, help_text='Total seats. Leave blank for no limit.')
     view_count = models.PositiveIntegerField(default=0, editable=False)
@@ -133,3 +134,15 @@ class Booking(models.Model):
 
     def __str__(self):
         return f'{self.reference} · {self.name} ({self.attendees})'
+
+
+class EventDailyViews(models.Model):
+    """Page views of an event per day, for the performance chart. `Event.view_count` keeps the all-time total."""
+
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name='daily_views')
+    date = models.DateField()
+    views = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['event', 'date'], name='events_daily_views_unique_day')]
+        ordering = ['date']

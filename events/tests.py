@@ -11,7 +11,7 @@ from django.test import override_settings
 from PIL import Image
 from rest_framework.test import APITestCase
 
-from .models import Booking, Event, format_period
+from .models import Booking, Event, EventDailyViews, format_period
 
 MEDIA = tempfile.mkdtemp()
 
@@ -23,7 +23,7 @@ class EventListTests(APITestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual([e['slug'] for e in response.data['events']], ['afrigulf-2026', 'lccm-2026'])
         self.assertEqual(set(response.data['events'][0]), {
-            'slug', 'title', 'location', 'period', 'organiser', 'summary', 'label', 'image', 'imageUrl', 'category', 'startDate', 'endDate',
+            'slug', 'title', 'location', 'period', 'organiser', 'summary', 'label', 'image', 'imageUrl', 'category', 'startDate', 'endDate', 'isFeatured',
         })
 
     def test_includes_category_and_dates(self):
@@ -216,6 +216,7 @@ class BookingTests(APITestCase):
         self.client.post('/api/events/missing/view')
         self.event.refresh_from_db()
         self.assertEqual(self.event.view_count, 3)
+        self.assertEqual(list(EventDailyViews.objects.values_list('views', flat=True)), [3])
 
 
 class AdminBookingTests(APITestCase):
@@ -256,3 +257,45 @@ class AdminBookingTests(APITestCase):
         self.client.force_authenticate(get_user_model().objects.create_user('v@example.com', 'x'))
         self.assertEqual(self.client.get(f'/api/admin/events/{self.event.pk}/bookings').status_code, 403)
         self.assertEqual(self.client.patch(f'/api/admin/bookings/{self.amina.reference}', {'status': 'cancelled'}).status_code, 403)
+
+
+class AdminPerformanceTests(APITestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.client.force_authenticate(User.objects.create_user('staff@example.com', 'x', is_staff=True))
+        self.event = Event.objects.create(slug='forum', title='Forum', location='Nairobi', organiser='x', summary='x',
+                                          start_date='2099-05-01', view_count=50)
+        today = date.today()
+        from datetime import timedelta
+        EventDailyViews.objects.create(event=self.event, date=today, views=4)
+        EventDailyViews.objects.create(event=self.event, date=today - timedelta(days=3), views=6)
+        EventDailyViews.objects.create(event=self.event, date=today - timedelta(days=20), views=10)
+        Booking.objects.create(event=self.event, name='A', email='a@example.com', country='x', attendees=3)
+        Booking.objects.create(event=self.event, name='B', email='b@example.com', country='x', attendees=2, status='cancelled')
+
+    def test_daily_views_and_seats(self):
+        data = self.client.get(f'/api/admin/events/{self.event.pk}/performance').data
+        self.assertEqual((data['days'], len(data['daily'])), (30, 30))
+        self.assertEqual(data['daily'][-1], {'date': date.today().isoformat(), 'views': 4, 'bookings': 1, 'seats': 3})
+        self.assertEqual(sum(d['views'] for d in data['daily']), 20)
+        self.assertEqual(data['views'], {'total': 50, 'lastWeek': 10})
+        self.assertEqual(data['bookings'], {'confirmed': 1, 'cancelled': 1, 'seats': 3})
+        week = self.client.get(f'/api/admin/events/{self.event.pk}/performance', {'days': '7'}).data
+        self.assertEqual(sum(d['views'] for d in week['daily']), 10)
+
+    def test_all_bookings_list(self):
+        other = Event.objects.create(slug='expo', title='Expo', location='x', organiser='x', summary='x', start_date='2099-01-01')
+        Booking.objects.create(event=other, name='C', email='c@example.com', country='x')
+        data = self.client.get('/api/admin/bookings').data
+        self.assertEqual([b['name'] for b in data['bookings']], ['C', 'B', 'A'])
+        self.assertEqual(data['statusCounts'], {'confirmed': 2, 'cancelled': 1})
+        self.assertEqual([e['title'] for e in data['events']], ['Expo', 'Forum'])
+        filtered = self.client.get('/api/admin/bookings', {'event': self.event.pk, 'status': 'confirmed'}).data
+        self.assertEqual([b['name'] for b in filtered['bookings']], ['A'])
+        self.assertEqual(filtered['bookings'][0]['eventTitle'], 'Forum')
+
+    def test_featured_flag(self):
+        response = self.client.patch(f'/api/admin/events/{self.event.pk}', {'isFeatured': True}, format='json')
+        self.assertTrue(response.data['event']['isFeatured'])
+        public = next(e for e in self.client.get('/api/events').data['events'] if e['slug'] == 'forum')
+        self.assertTrue(public['isFeatured'])

@@ -1,12 +1,16 @@
 import csv
 import logging
+from collections import Counter
+from datetime import datetime, time, timedelta
 
 from django.core.mail import send_mail
+from django.core.paginator import Paginator
 from django.db import transaction
 from django.db.models import Count, F, Q, Sum
 from django.db.models.functions import Coalesce
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
 from rest_framework import serializers, status
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import AllowAny
@@ -14,7 +18,7 @@ from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
-from .models import Booking, Event, new_booking_reference
+from .models import Booking, Event, EventDailyViews, new_booking_reference
 from .serializers import AdminBookingSerializer, AdminEventSerializer, BookingCreateSerializer, EventDetailSerializer, EventSerializer
 
 logger = logging.getLogger(__name__)
@@ -75,7 +79,12 @@ class EventViewCountView(APIView):
     throttle_scope = 'event_views'
 
     def post(self, request, slug):
-        Event.objects.filter(slug=slug, is_published=True).update(view_count=F('view_count') + 1)
+        event = Event.objects.filter(slug=slug, is_published=True).first()
+        if event is not None:
+            with transaction.atomic():
+                Event.objects.filter(pk=event.pk).update(view_count=F('view_count') + 1)
+                day, _ = EventDailyViews.objects.get_or_create(event=event, date=timezone.localdate())
+                EventDailyViews.objects.filter(pk=day.pk).update(views=F('views') + 1)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -196,3 +205,71 @@ class AdminBookingDetailView(APIView):
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response({'booking': serializer.data})
+
+
+PERFORMANCE_RANGES = {'7': 7, '30': 30, '90': 90}
+
+
+class AdminEventPerformanceView(APIView):
+    """Views and seats booked per day for one event over the last `days` days (7, 30 or 90; default 30)."""
+
+    def get(self, request, pk):
+        event = get_object_or_404(Event, pk=pk)
+        days = PERFORMANCE_RANGES.get(request.query_params.get('days', ''), 30)
+        today = timezone.localdate()
+        first_day = today - timedelta(days=days - 1)
+
+        views = dict(event.daily_views.filter(date__gte=first_day).values_list('date', 'views'))
+        seats, bookings = Counter(), Counter()
+        confirmed = event.bookings.filter(status=Booking.Status.CONFIRMED)
+        # Bucket in Python (not TruncDate) so it works without MySQL's time zone tables.
+        start = timezone.make_aware(datetime.combine(first_day, time.min))
+        for created, attendees in confirmed.filter(created_at__gte=start).values_list('created_at', 'attendees'):
+            day = timezone.localdate(created)
+            seats[day] += attendees
+            bookings[day] += 1
+
+        dates = [first_day + timedelta(days=i) for i in range(days)]
+        last_week = today - timedelta(days=6)
+        return Response({
+            'days': days,
+            'daily': [{'date': d.isoformat(), 'views': views.get(d, 0), 'bookings': bookings.get(d, 0), 'seats': seats.get(d, 0)} for d in dates],
+            'views': {
+                'total': event.view_count,
+                'lastWeek': event.daily_views.filter(date__gte=last_week).aggregate(n=Coalesce(Sum('views'), 0))['n'],
+            },
+            'bookings': {
+                'confirmed': confirmed.count(),
+                'cancelled': event.bookings.filter(status=Booking.Status.CANCELLED).count(),
+                'seats': event.seats_booked(),
+            },
+        })
+
+
+class AdminBookingListView(APIView):
+    """Bookings across all events, newest first, 25 per page. Filter with `event` (id), `status` and `search`."""
+
+    page_size = 25
+
+    def get(self, request):
+        bookings = Booking.objects.select_related('event')
+        event_id = request.query_params.get('event', '')
+        if event_id.isdigit():
+            bookings = bookings.filter(event_id=event_id)
+        search = request.query_params.get('search', '').strip()
+        if search:
+            bookings = bookings.filter(Q(reference__icontains=search) | Q(name__icontains=search) | Q(email__icontains=search)
+                                       | Q(organisation__icontains=search) | Q(event__title__icontains=search))
+        counts = dict(bookings.order_by().values_list('status').annotate(n=Count('id')))
+        status_filter = request.query_params.get('status', '')
+        if status_filter in Booking.Status.values:
+            bookings = bookings.filter(status=status_filter)
+        page = Paginator(bookings, self.page_size).get_page(request.query_params.get('page'))
+        return Response({
+            'bookings': AdminBookingSerializer(page.object_list, many=True).data,
+            'count': page.paginator.count,
+            'page': page.number,
+            'pages': page.paginator.num_pages,
+            'statusCounts': {value: counts.get(value, 0) for value in Booking.Status.values},
+            'events': [{'id': str(e.pk), 'title': e.title} for e in Event.objects.filter(bookings__isnull=False).distinct().order_by('title')],
+        })

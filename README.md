@@ -56,6 +56,8 @@ Errors are a non-2xx status with `{ "error": "<message for the user>", "fields":
 | `PATCH /api/admin/events/<id>` | Bearer | any event fields, `cover`, `removeCover` | `{ event }` |
 | `DELETE /api/admin/events/<id>` | Bearer | – | `204` |
 | `GET /api/admin/events/<id>/bookings?status=&search=` | Bearer | – | `{ bookings: [booking], statusCounts, event }`; `&export=csv` downloads a CSV |
+| `GET /api/admin/events/<id>/performance?days=7\|30\|90` | Bearer | – | `{ days, daily: [{ date, views, bookings, seats }], views: { total, lastWeek }, bookings: { confirmed, cancelled, seats } }` |
+| `GET /api/admin/bookings?event=&status=&search=&page=` | Bearer | – | `{ bookings: [booking], count, page, pages, statusCounts, events: [{ id, title }] }` |
 | `PATCH /api/admin/bookings/<reference>` | Bearer | `{ status?, notes? }` | `{ booking }` |
 | `GET /api/admin/stats?days=7\|30\|90` | Bearer | – | `{ days, totals, period, daily, byStatus, topInterests, topCountries, recent }` |
 | `GET /api/admin/staff` | Bearer (admin) | – | `{ staff: [member] }` |
@@ -81,7 +83,8 @@ Errors are a non-2xx status with `{ "error": "<message for the user>", "fields":
 - **Bookings** reserve seats without payment and email the booker a confirmation with an `EVB-…` reference.
   They're refused when the event is unpublished, has `bookingsOpen` off, is past, or lacks enough seats (`capacity`,
   blank for unlimited), and when the email already has a confirmed booking for that event. Up to 20 seats per booking.
-  Cancelled bookings free their seats. Admin events include `stats: { views, bookings, seatsBooked, seatsLeft }`; views
+  Cancelled bookings free their seats. Views are also recorded per day (`EventDailyViews`) for the performance chart;
+  `isFeatured` events lead the home page. Admin events include `stats: { views, bookings, seatsBooked, seatsLeft }`; views
   are counted by the event page once per browser session.
 - **Events**: `category` is `summit`, `conference`, `exhibition`, `trade_mission`, `workshop` or `networking`.
   `startDate` / `endDate` are `YYYY-MM-DD` or `null` when not confirmed; `period` is the display text.

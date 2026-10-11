@@ -18,10 +18,12 @@ class EventSerializer(serializers.ModelSerializer):
     startDate = serializers.DateField(source='start_date')
     endDate = serializers.DateField(source='end_date')
     imageUrl = serializers.SerializerMethodField()
+    isFeatured = serializers.BooleanField(source='is_featured')
 
     class Meta:
         model = Event
-        fields = ['slug', 'title', 'location', 'period', 'organiser', 'summary', 'label', 'image', 'imageUrl', 'category', 'startDate', 'endDate']
+        fields = ['slug', 'title', 'location', 'period', 'organiser', 'summary', 'label', 'image', 'imageUrl', 'category', 'startDate', 'endDate',
+                  'isFeatured']
 
     def get_imageUrl(self, event):
         return cover_url(event)
@@ -100,6 +102,7 @@ class AdminEventSerializer(serializers.ModelSerializer):
     label = serializers.CharField(max_length=40, required=False, allow_blank=True)
     isPublished = serializers.BooleanField(source='is_published', required=False)
     bookingsOpen = serializers.BooleanField(source='bookings_open', required=False)
+    isFeatured = serializers.BooleanField(source='is_featured', required=False)
     capacity = serializers.IntegerField(required=False, allow_null=True, min_value=1,
                                         error_messages={'min_value': 'Capacity must be at least 1, or blank for no limit.'})
     description = serializers.CharField(required=False, allow_blank=True)
@@ -115,7 +118,7 @@ class AdminEventSerializer(serializers.ModelSerializer):
         model = Event
         fields = [
             'id', 'slug', 'title', 'category', 'location', 'startDate', 'endDate', 'period', 'organiser', 'summary', 'label',
-            'description', 'image', 'cover', 'removeCover', 'imageUrl', 'isPublished', 'bookingsOpen', 'capacity', 'sortOrder',
+            'description', 'image', 'cover', 'removeCover', 'imageUrl', 'isPublished', 'bookingsOpen', 'isFeatured', 'capacity', 'sortOrder',
             'stats', 'createdAt', 'updatedAt',
         ]
         extra_kwargs = {
@@ -146,7 +149,7 @@ class AdminEventSerializer(serializers.ModelSerializer):
     def to_internal_value(self, data):
         attrs = super().to_internal_value(data)
         # DRF reads a boolean missing from multipart data as False; treat "not sent" as "unchanged" (or the default).
-        for field, attr in [('isPublished', 'is_published'), ('bookingsOpen', 'bookings_open')]:
+        for field, attr in [('isPublished', 'is_published'), ('bookingsOpen', 'bookings_open'), ('isFeatured', 'is_featured')]:
             if field not in data:
                 attrs.pop(attr, None)
         return attrs
