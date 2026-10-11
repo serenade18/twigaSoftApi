@@ -1,7 +1,7 @@
 from django.utils.text import slugify
 from rest_framework import serializers
 
-from .models import Event, format_period
+from .models import MAX_ATTENDEES, Booking, Event, format_period
 
 MAX_COVER_BYTES = 5 * 1024 * 1024
 
@@ -27,6 +27,68 @@ class EventSerializer(serializers.ModelSerializer):
         return cover_url(event)
 
 
+class EventDetailSerializer(EventSerializer):
+    """One event for its public page, with whether it can be booked."""
+
+    bookingsOpen = serializers.SerializerMethodField()
+    closedReason = serializers.SerializerMethodField()
+    seatsLeft = serializers.SerializerMethodField()
+    maxAttendees = serializers.SerializerMethodField()
+
+    class Meta(EventSerializer.Meta):
+        fields = EventSerializer.Meta.fields + ['description', 'bookingsOpen', 'closedReason', 'seatsLeft', 'maxAttendees']
+
+    def get_bookingsOpen(self, event):
+        return event.booking_closed_reason() is None
+
+    def get_closedReason(self, event):
+        return event.booking_closed_reason()
+
+    def get_seatsLeft(self, event):
+        return event.seats_left()
+
+    def get_maxAttendees(self, event):
+        left = event.seats_left()
+        return MAX_ATTENDEES if left is None else min(MAX_ATTENDEES, left)
+
+
+class BookingCreateSerializer(serializers.ModelSerializer):
+    # Honeypot, as on the enquiry form.
+    website = serializers.CharField(required=False, allow_blank=True, write_only=True, max_length=200)
+
+    class Meta:
+        model = Booking
+        fields = ['name', 'email', 'phone', 'organisation', 'country', 'attendees', 'message', 'website']
+        extra_kwargs = {
+            'name': {'error_messages': {'blank': 'Please enter your full name.'}},
+            'email': {'error_messages': {'invalid': 'Please enter a valid email address.'}},
+            'country': {'error_messages': {'blank': 'Please enter your country.'}},
+            'attendees': {'error_messages': {
+                'min_value': 'Book at least one seat.',
+                'max_value': f'You can book up to {MAX_ATTENDEES} seats at once. Contact us for larger groups.',
+                'invalid': 'Enter the number of seats.',
+            }},
+        }
+
+    def create(self, validated_data):
+        validated_data.pop('website', None)
+        return super().create(validated_data)
+
+
+class AdminBookingSerializer(serializers.ModelSerializer):
+    """A booking as staff see it; only status and internal notes can be changed."""
+
+    createdAt = serializers.DateTimeField(source='created_at', read_only=True)
+    eventId = serializers.CharField(source='event_id', read_only=True)
+    eventTitle = serializers.CharField(source='event.title', read_only=True)
+
+    class Meta:
+        model = Booking
+        fields = ['reference', 'eventId', 'eventTitle', 'name', 'email', 'phone', 'organisation', 'country', 'attendees', 'message',
+                  'status', 'notes', 'createdAt']
+        read_only_fields = ['reference', 'name', 'email', 'phone', 'organisation', 'country', 'attendees', 'message']
+
+
 class AdminEventSerializer(serializers.ModelSerializer):
     """An event as staff manage it. Accepts JSON or multipart (for `cover`); send `removeCover: true` to drop the cover."""
 
@@ -37,6 +99,11 @@ class AdminEventSerializer(serializers.ModelSerializer):
     period = serializers.CharField(max_length=80, required=False, allow_blank=True)
     label = serializers.CharField(max_length=40, required=False, allow_blank=True)
     isPublished = serializers.BooleanField(source='is_published', required=False)
+    bookingsOpen = serializers.BooleanField(source='bookings_open', required=False)
+    capacity = serializers.IntegerField(required=False, allow_null=True, min_value=1,
+                                        error_messages={'min_value': 'Capacity must be at least 1, or blank for no limit.'})
+    description = serializers.CharField(required=False, allow_blank=True)
+    stats = serializers.SerializerMethodField()
     sortOrder = serializers.IntegerField(source='sort_order', required=False, min_value=0)
     cover = serializers.ImageField(required=False, write_only=True)
     removeCover = serializers.BooleanField(required=False, write_only=True, default=False)
@@ -48,7 +115,8 @@ class AdminEventSerializer(serializers.ModelSerializer):
         model = Event
         fields = [
             'id', 'slug', 'title', 'category', 'location', 'startDate', 'endDate', 'period', 'organiser', 'summary', 'label',
-            'image', 'cover', 'removeCover', 'imageUrl', 'isPublished', 'sortOrder', 'createdAt', 'updatedAt',
+            'description', 'image', 'cover', 'removeCover', 'imageUrl', 'isPublished', 'bookingsOpen', 'capacity', 'sortOrder',
+            'stats', 'createdAt', 'updatedAt',
         ]
         extra_kwargs = {
             'title': {'error_messages': {'blank': 'Please enter a title.'}},
@@ -60,11 +128,27 @@ class AdminEventSerializer(serializers.ModelSerializer):
     def get_imageUrl(self, event):
         return cover_url(event)
 
+    def get_stats(self, event):
+        # List views annotate these to avoid a query per event; single events compute them.
+        bookings = getattr(event, 'confirmed_bookings', None)
+        if bookings is None:
+            bookings = event.bookings.filter(status=Booking.Status.CONFIRMED).count()
+        seats = getattr(event, 'seats_booked_total', None)
+        if seats is None:
+            seats = event.seats_booked()
+        return {
+            'views': event.view_count,
+            'bookings': bookings,
+            'seatsBooked': seats,
+            'seatsLeft': event.seats_left(booked=seats),
+        }
+
     def to_internal_value(self, data):
         attrs = super().to_internal_value(data)
         # DRF reads a boolean missing from multipart data as False; treat "not sent" as "unchanged" (or the default).
-        if 'isPublished' not in data:
-            attrs.pop('is_published', None)
+        for field, attr in [('isPublished', 'is_published'), ('bookingsOpen', 'bookings_open')]:
+            if field not in data:
+                attrs.pop(attr, None)
         return attrs
 
     def validate_cover(self, cover):

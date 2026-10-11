@@ -123,6 +123,8 @@ REST_FRAMEWORK = {
         'password_reset': '5/hour',
         'password_reset_confirm': '20/hour',
         'enquiries': '20/hour',
+        'bookings': '20/hour',
+        'event_views': '300/hour',
     },
 }
 

@@ -5,7 +5,7 @@ from django.utils import timezone
 from rest_framework.test import APITestCase
 
 from enquiries.models import Enquiry
-from events.models import Event
+from events.models import Booking, Event
 
 
 def make_enquiry(days_ago=0, **fields):
@@ -23,7 +23,10 @@ class StatsTests(APITestCase):
         self.client.force_authenticate(User.objects.create_user('staff@example.com', 'x', is_staff=True))
         User.objects.create_user('gone@example.com', 'x', is_staff=True, is_active=False)
         User.objects.create_user('visitor@example.com', 'x')
-        Event.objects.create(slug='a', title='A', location='x', period='x', organiser='x', summary='x')
+        self.event = Event.objects.create(slug='a', title='A', location='x', period='x', organiser='x', summary='x', view_count=12)
+        Booking.objects.create(event=self.event, name='N', email='n@example.com', country='x', attendees=2)
+        Booking.objects.create(event=self.event, name='M', email='m@example.com', country='x', attendees=1)
+        Booking.objects.create(event=self.event, name='C', email='c@example.com', country='x', status='cancelled')
         Event.objects.create(slug='b', title='B', location='x', period='x', organiser='x', summary='x', is_published=False)
         make_enquiry(0)
         make_enquiry(2, country='Oman', status=Enquiry.Status.CLOSED)
@@ -39,8 +42,10 @@ class StatsTests(APITestCase):
         data = self.client.get('/api/admin/stats').data
         self.assertEqual(data['days'], 30)
         published = Event.objects.filter(is_published=True).count()  # includes events seeded by migrations
-        self.assertEqual(data['totals'], {'enquiries': 5, 'awaitingReply': 3, 'publishedEvents': published, 'activeStaff': 1})
-        self.assertEqual(data['period'], {'enquiries': 4, 'previous': 1})
+        self.assertEqual(data['totals'], {'enquiries': 5, 'awaitingReply': 3, 'publishedEvents': published, 'activeStaff': 1, 'bookings': 2})
+        self.assertEqual(data['period'], {'enquiries': 4, 'previous': 1, 'bookings': 2, 'previousBookings': 0})
+        self.assertEqual(data['eventPerformance'][0], {'id': str(self.event.pk), 'title': 'A', 'views': 12, 'bookings': 2, 'seatsBooked': 3})
+        self.assertEqual(len(data['eventPerformance']), 1)  # events with no views or bookings are left out
         self.assertEqual(len(data['daily']), 30)
         self.assertEqual(data['daily'][-1], {'date': timezone.localdate().isoformat(), 'count': 1})
         self.assertEqual(sum(d['count'] for d in data['daily']), 4)
@@ -52,5 +57,5 @@ class StatsTests(APITestCase):
     def test_range_scopes_period_figures(self):
         data = self.client.get('/api/admin/stats', {'days': '7'}).data
         self.assertEqual((data['days'], len(data['daily'])), (7, 7))
-        self.assertEqual(data['period'], {'enquiries': 3, 'previous': 1})
+        self.assertEqual((data['period']['enquiries'], data['period']['previous']), (3, 1))
         self.assertEqual(self.client.get('/api/admin/stats', {'days': '999'}).data['days'], 30)

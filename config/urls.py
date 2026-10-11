@@ -13,7 +13,7 @@ urlpatterns = [
     path('api/admin/', include('accounts.staff_urls')),
     path('api/admin/', include('dashboard.urls')),
     path('api/admin/', include('events.admin_urls')),
-    path('api/events', include('events.urls')),
+    path('api/', include('events.urls')),
     path('api/enquiries', include('enquiries.urls')),
 ]
 

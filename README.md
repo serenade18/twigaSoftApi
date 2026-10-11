@@ -38,6 +38,9 @@ Errors are a non-2xx status with `{ "error": "<message for the user>", "fields":
 | Method & path | Auth | Body | Response |
 | --- | --- | --- | --- |
 | `GET /api/events` | – | – | `{ events: [{ slug, title, location, period, organiser, summary, label, image, imageUrl, category, startDate, endDate }] }` |
+| `GET /api/events/<slug>` | – | – | `{ event: { …, description, bookingsOpen, closedReason, seatsLeft, maxAttendees } }` |
+| `POST /api/events/<slug>/view` | – | – | `204` (counts a page view) |
+| `POST /api/events/<slug>/bookings` | – | `{ name, email, phone?, organisation?, country, attendees, message?, website? }` | `201 { reference, attendees }` |
 | `POST /api/enquiries` | – | `{ name, email, phone?, country, interest, message, website? }` | `201 { reference }` |
 | `POST /api/admin/auth/login` | – | `{ email, password }` | `{ token, admin: { id, email, name, role } }` |
 | `POST /api/admin/auth/logout` | Bearer | – | `204` |
@@ -52,6 +55,8 @@ Errors are a non-2xx status with `{ "error": "<message for the user>", "fields":
 | `GET /api/admin/events/<id>` | Bearer | – | `{ event }` |
 | `PATCH /api/admin/events/<id>` | Bearer | any event fields, `cover`, `removeCover` | `{ event }` |
 | `DELETE /api/admin/events/<id>` | Bearer | – | `204` |
+| `GET /api/admin/events/<id>/bookings?status=&search=` | Bearer | – | `{ bookings: [booking], statusCounts, event }`; `&export=csv` downloads a CSV |
+| `PATCH /api/admin/bookings/<reference>` | Bearer | `{ status?, notes? }` | `{ booking }` |
 | `GET /api/admin/stats?days=7\|30\|90` | Bearer | – | `{ days, totals, period, daily, byStatus, topInterests, topCountries, recent }` |
 | `GET /api/admin/staff` | Bearer (admin) | – | `{ staff: [member] }` |
 | `POST /api/admin/staff` | Bearer (admin) | `{ email, password, firstName?, lastName?, role? }` | `201 { member }` |
@@ -73,13 +78,18 @@ Errors are a non-2xx status with `{ "error": "<message for the user>", "fields":
   `slug` is generated from the title when blank. A blank `period` is generated from the dates ("14–15 April 2027") and
   regenerated when the dates change; a typed one is kept. Covers are JPG/PNG/WebP up to 5 MB, stored under `MEDIA_ROOT`
   (`imageUrl` is a `/media/...` path; serve `MEDIA_ROOT` at `/media/` in production). Without a cover, `image` picks a built-in photo.
+- **Bookings** reserve seats without payment and email the booker a confirmation with an `EVB-…` reference.
+  They're refused when the event is unpublished, has `bookingsOpen` off, is past, or lacks enough seats (`capacity`,
+  blank for unlimited), and when the email already has a confirmed booking for that event. Up to 20 seats per booking.
+  Cancelled bookings free their seats. Admin events include `stats: { views, bookings, seatsBooked, seatsLeft }`; views
+  are counted by the event page once per browser session.
 - **Events**: `category` is `summit`, `conference`, `exhibition`, `trade_mission`, `workshop` or `networking`.
   `startDate` / `endDate` are `YYYY-MM-DD` or `null` when not confirmed; `period` is the display text.
 - **Enquiries**: a filled-in `website` honeypot gets a normal-looking response but nothing is stored.
   Admins see `{ reference, name, email, phone, country, interest, message, status, notes, createdAt }`,
   newest first, 20 per page; `status` is `new`, `in_progress` or `closed`, and only `status` and `notes` can be changed.
   `statusCounts` follows the search but not the status filter.
-- **Rate limits** per IP: login 10/min, forgot password 5/hour, reset 20/hour, enquiries 20/hour.
+- **Rate limits** per IP: login 10/min, forgot password 5/hour, reset 20/hour, enquiries 20/hour, bookings 20/hour, event views 300/hour.
 
 ## Managing content
 

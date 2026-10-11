@@ -1,5 +1,9 @@
-from django.core.validators import FileExtensionValidator
+import secrets
+
+from django.core.validators import FileExtensionValidator, MaxValueValidator, MinValueValidator
 from django.db import models
+from django.db.models import Sum
+from django.utils import timezone
 
 MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
 
@@ -38,6 +42,7 @@ class Event(models.Model):
                               help_text='Shown as written, e.g. "December 2026". Left blank, it is generated from the dates.')
     organiser = models.CharField(max_length=200)
     summary = models.CharField(max_length=300)
+    description = models.TextField(blank=True, help_text='Full details for the event page. Blank lines start new paragraphs.')
     category = models.CharField(max_length=20, choices=Category.choices, default=Category.SUMMIT)
     start_date = models.DateField(null=True, blank=True, help_text='Used to sort and to tell upcoming from past events. Leave blank if not confirmed.')
     end_date = models.DateField(null=True, blank=True, help_text='Last day, for events longer than a day.')
@@ -47,6 +52,9 @@ class Event(models.Model):
     cover = models.ImageField(upload_to='events/', blank=True,
                               validators=[FileExtensionValidator(['jpg', 'jpeg', 'png', 'webp'])])
     is_published = models.BooleanField(default=True)
+    bookings_open = models.BooleanField(default=True, help_text='Visitors can book seats while the event is upcoming and not full.')
+    capacity = models.PositiveIntegerField(null=True, blank=True, help_text='Total seats. Leave blank for no limit.')
+    view_count = models.PositiveIntegerField(default=0, editable=False)
     sort_order = models.PositiveIntegerField(default=0, help_text='Lower numbers appear first.')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -57,7 +65,71 @@ class Event(models.Model):
     def __str__(self):
         return self.title
 
+    @property
+    def last_day(self):
+        return self.end_date or self.start_date
+
+    def is_past(self, today=None):
+        return self.last_day is not None and self.last_day < (today or timezone.localdate())
+
+    def seats_booked(self):
+        return self.bookings.filter(status=Booking.Status.CONFIRMED).aggregate(n=Sum('attendees'))['n'] or 0
+
+    def seats_left(self, booked=None):
+        """Seats still available, or None when the event has no capacity limit."""
+        if self.capacity is None:
+            return None
+        return max(0, self.capacity - (self.seats_booked() if booked is None else booked))
+
+    def booking_closed_reason(self):
+        """Why visitors can't book right now, or None when they can."""
+        if not self.is_published or not self.bookings_open:
+            return 'Bookings are closed for this event.'
+        if self.is_past():
+            return 'This event has already taken place.'
+        if self.seats_left() == 0:
+            return 'This event is fully booked.'
+        return None
+
     def save(self, *args, **kwargs):
         if not self.period and self.start_date:
-            self.period = format_period(self.start_date, self.end_date)
+            # Dates can still be strings here when set in code (e.g. Event.objects.create(start_date='2027-03-10')).
+            to_date = self._meta.get_field('start_date').to_python
+            self.period = format_period(to_date(self.start_date), to_date(self.end_date))
         super().save(*args, **kwargs)
+
+
+BOOKING_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'  # no 0/O or 1/I
+MAX_ATTENDEES = 20
+
+
+def new_booking_reference():
+    return f'EVB-{timezone.now():%y%m%d}-' + ''.join(secrets.choice(BOOKING_ALPHABET) for _ in range(5))
+
+
+class Booking(models.Model):
+    """A visitor's seat reservation for an event. No payment is taken."""
+
+    class Status(models.TextChoices):
+        CONFIRMED = 'confirmed', 'Confirmed'
+        CANCELLED = 'cancelled', 'Cancelled'
+
+    reference = models.CharField(max_length=20, unique=True, default=new_booking_reference, editable=False)
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name='bookings')
+    name = models.CharField(max_length=120)
+    email = models.EmailField(max_length=200)
+    phone = models.CharField(max_length=40, blank=True)
+    organisation = models.CharField(max_length=160, blank=True)
+    country = models.CharField(max_length=80)
+    attendees = models.PositiveSmallIntegerField(default=1, validators=[MinValueValidator(1), MaxValueValidator(MAX_ATTENDEES)])
+    message = models.TextField(max_length=1000, blank=True)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.CONFIRMED)
+    notes = models.TextField('internal notes', blank=True)
+    ip_address = models.GenericIPAddressField(null=True, blank=True, editable=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'{self.reference} · {self.name} ({self.attendees})'

@@ -26,13 +26,14 @@ class Command(BaseCommand):
         Event.objects.create(
             slug='e2e-summit', title='E2E Investment Summit', location='Nairobi', period='March 2027',
             organiser='Organised by the E2E suite', summary='An event that only exists in the API database.',
+            description='Two days of investor meetings.\n\nRegistration opens at 8am.',
             label='View E2E Summit', image=Event.Image.CENTRE, sort_order=1,
             category=Event.Category.SUMMIT, start_date='2027-03-10', end_date='2027-03-11',
         )
         Event.objects.create(
             slug='e2e-expo', title='E2E Trade Expo', location='Kampala', period='June 2027',
             organiser='Organised by the E2E suite', summary='A trade exhibition for the events page filters.',
-            category=Event.Category.EXHIBITION, start_date='2027-06-02', sort_order=2,
+            category=Event.Category.EXHIBITION, start_date='2027-06-02', sort_order=2, capacity=3,
         )
         Event.objects.create(
             slug='e2e-past', title='E2E Founders Workshop', location='Nairobi', period='May 2025',
