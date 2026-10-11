@@ -27,7 +27,7 @@ class AdminAuthTests(APITestCase):
         response = self.login(email='ADMIN@example.com')
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data['token'], Token.objects.get(user=self.admin).key)
-        self.assertEqual(response.data['admin'], {'id': str(self.admin.pk), 'email': 'admin@example.com', 'name': 'Ahmed'})
+        self.assertEqual(response.data['admin'], {'id': str(self.admin.pk), 'email': 'admin@example.com', 'name': 'Ahmed', 'role': 'staff'})
 
     def test_login_rejects_wrong_password_unknown_email_and_non_staff(self):
         for email, password in [('admin@example.com', 'wrong'), ('nobody@example.com', PASSWORD), ('visitor@example.com', PASSWORD)]:
@@ -104,3 +104,77 @@ class AdminAuthTests(APITestCase):
     def test_login_is_throttled(self):
         statuses = [self.login(password='wrong').status_code for _ in range(11)]
         self.assertEqual(statuses[-1], 429)
+
+
+class StaffManagementTests(APITestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.owner = User.objects.create_superuser('owner@example.com', PASSWORD, first_name='Ahmed')
+        self.staff = User.objects.create_user('staff@example.com', PASSWORD, is_staff=True, first_name='Zara')
+        User.objects.create_user('visitor@example.com', PASSWORD)
+        self.client.force_authenticate(self.owner)
+
+    def test_me_reports_role(self):
+        self.assertEqual(self.client.get('/api/admin/auth/me').data['admin']['role'], 'admin')
+        self.client.force_authenticate(self.staff)
+        self.assertEqual(self.client.get('/api/admin/auth/me').data['admin']['role'], 'staff')
+
+    def test_only_admins_manage_staff(self):
+        self.client.force_authenticate(self.staff)
+        self.assertEqual(self.client.get('/api/admin/staff').status_code, 403)
+        self.assertEqual(self.client.post('/api/admin/staff', {}, format='json').status_code, 403)
+        self.client.force_authenticate(None)
+        self.assertEqual(self.client.get('/api/admin/staff').status_code, 401)
+
+    def test_lists_portal_accounts_only(self):
+        response = self.client.get('/api/admin/staff')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([m['email'] for m in response.data['staff']], ['owner@example.com', 'staff@example.com'])
+        self.assertEqual(response.data['staff'][1]['role'], 'staff')
+        self.assertNotIn('password', response.data['staff'][0])
+
+    def test_creates_staff_who_can_sign_in(self):
+        payload = {'email': 'new@example.com', 'firstName': 'Omar', 'lastName': 'Said', 'password': 'Welcome-pass-2026'}
+        response = self.client.post('/api/admin/staff', payload, format='json')
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual((response.data['member']['role'], response.data['member']['name']), ('staff', 'Omar Said'))
+        self.client.force_authenticate(None)
+        login = self.client.post('/api/admin/auth/login', {'email': 'new@example.com', 'password': 'Welcome-pass-2026'}, format='json')
+        self.assertEqual(login.status_code, 200)
+        self.assertEqual(login.data['admin']['role'], 'staff')
+
+    def test_create_validates_email_and_password(self):
+        taken = self.client.post('/api/admin/staff', {'email': 'STAFF@example.com', 'password': 'Welcome-pass-2026'}, format='json')
+        self.assertEqual(taken.status_code, 400)
+        self.assertIn('email', taken.data['fields'])
+        for password in ['', 'password1', '12345678']:
+            response = self.client.post('/api/admin/staff', {'email': 'x@example.com', 'password': password}, format='json')
+            self.assertEqual(response.status_code, 400)
+            self.assertIn('password', response.data['fields'])
+
+    def test_updates_role_and_deactivation_signs_out(self):
+        token = Token.objects.create(user=self.staff)
+        url = f'/api/admin/staff/{self.staff.pk}'
+        self.assertEqual(self.client.patch(url, {'role': 'admin'}, format='json').data['member']['role'], 'admin')
+        response = self.client.patch(url, {'isActive': False, 'firstName': 'Zee'}, format='json')
+        self.assertEqual(response.status_code, 200)
+        self.staff.refresh_from_db()
+        self.assertEqual((self.staff.is_active, self.staff.is_superuser, self.staff.first_name), (False, True, 'Zee'))
+        self.assertFalse(Token.objects.filter(pk=token.pk).exists())
+
+    def test_password_change_signs_out(self):
+        token = Token.objects.create(user=self.staff)
+        self.client.patch(f'/api/admin/staff/{self.staff.pk}', {'password': 'Another-pass-2027'}, format='json')
+        self.staff.refresh_from_db()
+        self.assertTrue(self.staff.check_password('Another-pass-2027'))
+        self.assertFalse(Token.objects.filter(pk=token.pk).exists())
+
+    def test_admin_cannot_lock_themselves_out(self):
+        url = f'/api/admin/staff/{self.owner.pk}'
+        self.assertIn('role', self.client.patch(url, {'role': 'staff'}, format='json').data['fields'])
+        self.assertIn('isActive', self.client.patch(url, {'isActive': False}, format='json').data['fields'])
+        self.assertEqual(self.client.patch(url, {'firstName': 'A'}, format='json').status_code, 200)
+
+    def test_non_portal_users_are_not_editable(self):
+        visitor = get_user_model().objects.get(email='visitor@example.com')
+        self.assertEqual(self.client.patch(f'/api/admin/staff/{visitor.pk}', {'role': 'admin'}, format='json').status_code, 404)

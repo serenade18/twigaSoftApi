@@ -13,7 +13,9 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument('--admin', action='append', default=[], metavar='EMAIL:PASSWORD[:NAME]',
-                            help='Create a staff user; repeat for more.')
+                            help='Create an admin (superuser); repeat for more.')
+        parser.add_argument('--staff', action='append', default=[], metavar='EMAIL:PASSWORD[:NAME]',
+                            help='Create a staff user (no staff management); repeat for more.')
 
     def handle(self, *args, **options):
         if not getattr(settings, 'E2E', False):
@@ -31,10 +33,11 @@ class Command(BaseCommand):
             summary='x', is_published=False,
         )
 
-        for spec in options['admin']:
-            email, password, *rest = spec.split(':')
-            first_name = rest[0] if rest else ''
-            get_user_model().objects.create_user(email, password, is_staff=True, first_name=first_name)
+        for option, is_superuser in [('admin', True), ('staff', False)]:
+            for spec in options[option]:
+                email, password, *rest = spec.split(':')
+                first_name = rest[0] if rest else ''
+                get_user_model().objects.create_user(email, password, is_staff=True, is_superuser=is_superuser, first_name=first_name)
 
         mail_dir = Path(settings.EMAIL_FILE_PATH)
         shutil.rmtree(mail_dir, ignore_errors=True)
