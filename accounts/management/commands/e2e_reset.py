@@ -27,6 +27,17 @@ class Command(BaseCommand):
             slug='e2e-summit', title='E2E Investment Summit', location='Nairobi', period='March 2027',
             organiser='Organised by the E2E suite', summary='An event that only exists in the API database.',
             label='View E2E Summit', image=Event.Image.CENTRE, sort_order=1,
+            category=Event.Category.SUMMIT, start_date='2027-03-10', end_date='2027-03-11',
+        )
+        Event.objects.create(
+            slug='e2e-expo', title='E2E Trade Expo', location='Kampala', period='June 2027',
+            organiser='Organised by the E2E suite', summary='A trade exhibition for the events page filters.',
+            category=Event.Category.EXHIBITION, start_date='2027-06-02', sort_order=2,
+        )
+        Event.objects.create(
+            slug='e2e-past', title='E2E Founders Workshop', location='Nairobi', period='May 2025',
+            organiser='Organised by the E2E suite', summary='A workshop that has already happened.',
+            category=Event.Category.WORKSHOP, start_date='2025-05-20', sort_order=3,
         )
         Event.objects.create(
             slug='e2e-hidden', title='Unpublished E2E Event', location='x', period='x', organiser='x',
@@ -38,6 +49,8 @@ class Command(BaseCommand):
                 email, password, *rest = spec.split(':')
                 first_name = rest[0] if rest else ''
                 get_user_model().objects.create_user(email, password, is_staff=True, is_superuser=is_superuser, first_name=first_name)
+
+        shutil.rmtree(settings.MEDIA_ROOT, ignore_errors=True)  # uploaded event covers
 
         mail_dir = Path(settings.EMAIL_FILE_PATH)
         shutil.rmtree(mail_dir, ignore_errors=True)

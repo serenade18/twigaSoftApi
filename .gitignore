@@ -4,3 +4,5 @@ __pycache__/
 .env
 staticfiles/
 .e2e-mail/
+media/
+.e2e-media/

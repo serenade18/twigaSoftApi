@@ -23,6 +23,7 @@ E2E = True
 FRONTEND_URL = os.environ.get('FRONTEND_URL', 'http://127.0.0.1:5174').rstrip('/')
 EMAIL_BACKEND = 'django.core.mail.backends.filebased.EmailBackend'
 EMAIL_FILE_PATH = os.environ.get('E2E_EMAIL_DIR', str(BASE_DIR / '.e2e-mail'))
+MEDIA_ROOT = BASE_DIR / '.e2e-media'
 REST_FRAMEWORK = {
     **REST_FRAMEWORK,
     'DEFAULT_THROTTLE_RATES': {scope: '10000/min' for scope in REST_FRAMEWORK['DEFAULT_THROTTLE_RATES']},

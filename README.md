@@ -37,7 +37,7 @@ Errors are a non-2xx status with `{ "error": "<message for the user>", "fields":
 
 | Method & path | Auth | Body | Response |
 | --- | --- | --- | --- |
-| `GET /api/events` | – | – | `{ events: [{ slug, title, location, period, organiser, summary, label, image }] }` |
+| `GET /api/events` | – | – | `{ events: [{ slug, title, location, period, organiser, summary, label, image, imageUrl, category, startDate, endDate }] }` |
 | `POST /api/enquiries` | – | `{ name, email, phone?, country, interest, message, website? }` | `201 { reference }` |
 | `POST /api/admin/auth/login` | – | `{ email, password }` | `{ token, admin: { id, email, name, role } }` |
 | `POST /api/admin/auth/logout` | Bearer | – | `204` |
@@ -47,6 +47,11 @@ Errors are a non-2xx status with `{ "error": "<message for the user>", "fields":
 | `GET /api/admin/enquiries?status=&search=&page=` | Bearer | – | `{ enquiries: [enquiry], count, page, pages, statusCounts: { new, in_progress, closed } }` |
 | `GET /api/admin/enquiries/<reference>` | Bearer | – | `{ enquiry }` |
 | `PATCH /api/admin/enquiries/<reference>` | Bearer | `{ status?, notes? }` | `{ enquiry }` |
+| `GET /api/admin/events?status=published\|draft&category=&search=` | Bearer | – | `{ events: [event], statusCounts: { published, draft } }` |
+| `POST /api/admin/events` | Bearer | event fields (JSON, or multipart with `cover`) | `201 { event }` |
+| `GET /api/admin/events/<id>` | Bearer | – | `{ event }` |
+| `PATCH /api/admin/events/<id>` | Bearer | any event fields, `cover`, `removeCover` | `{ event }` |
+| `DELETE /api/admin/events/<id>` | Bearer | – | `204` |
 | `GET /api/admin/stats?days=7\|30\|90` | Bearer | – | `{ days, totals, period, daily, byStatus, topInterests, topCountries, recent }` |
 | `GET /api/admin/staff` | Bearer (admin) | – | `{ staff: [member] }` |
 | `POST /api/admin/staff` | Bearer (admin) | `{ email, password, firstName?, lastName?, role? }` | `201 { member }` |
@@ -63,6 +68,13 @@ Errors are a non-2xx status with `{ "error": "<message for the user>", "fields":
 - **Password reset** emails link to `FRONTEND_URL/admin/reset-password?token=…`. Links expire after
   `PASSWORD_RESET_TIMEOUT` seconds (default 1 hour) and stop working once used, or once the admin signs in again.
   A successful reset signs the admin out everywhere. Django's password validators apply.
+- **Event engine**: staff manage events from the site's admin portal (drafts included). An admin event is
+  `{ id, slug, title, category, location, startDate, endDate, period, organiser, summary, label, image, imageUrl, isPublished, sortOrder, createdAt, updatedAt }`.
+  `slug` is generated from the title when blank. A blank `period` is generated from the dates ("14–15 April 2027") and
+  regenerated when the dates change; a typed one is kept. Covers are JPG/PNG/WebP up to 5 MB, stored under `MEDIA_ROOT`
+  (`imageUrl` is a `/media/...` path; serve `MEDIA_ROOT` at `/media/` in production). Without a cover, `image` picks a built-in photo.
+- **Events**: `category` is `summit`, `conference`, `exhibition`, `trade_mission`, `workshop` or `networking`.
+  `startDate` / `endDate` are `YYYY-MM-DD` or `null` when not confirmed; `period` is the display text.
 - **Enquiries**: a filled-in `website` honeypot gets a normal-looking response but nothing is stored.
   Admins see `{ reference, name, email, phone, country, interest, message, status, notes, createdAt }`,
   newest first, 20 per page; `status` is `new`, `in_progress` or `closed`, and only `status` and `notes` can be changed.
@@ -77,6 +89,6 @@ which the site shows in order of `sort_order`, and to view enquiries and track t
 ## Production
 
 Set `DJANGO_DEBUG=false`, `DJANGO_SECRET_KEY`, `DJANGO_ALLOWED_HOSTS`, `DATABASE_URL` (`mysql://user:pass@host:3306/db`),
-`FRONTEND_URL`, SMTP settings, and `CORS_ALLOWED_ORIGINS` / `CSRF_TRUSTED_ORIGINS` if the site and API
+`FRONTEND_URL`, `MEDIA_ROOT` (served at `/media/`), SMTP settings, and `CORS_ALLOWED_ORIGINS` / `CSRF_TRUSTED_ORIGINS` if the site and API
 are on different origins. Run `manage.py collectstatic` and serve with a WSGI server such as gunicorn.
 The rate limits use Django's cache; configure a shared cache (e.g. Redis) if you run several processes.
