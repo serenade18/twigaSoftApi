@@ -44,6 +44,9 @@ Errors are a non-2xx status with `{ "error": "<message for the user>", "fields":
 | `GET /api/admin/auth/me` | Bearer | – | `{ admin }` |
 | `POST /api/admin/auth/forgot-password` | – | `{ email }` | `200`, the same whether or not the account exists |
 | `POST /api/admin/auth/reset-password` | – | `{ token, password }` | `200` |
+| `GET /api/admin/enquiries?status=&search=&page=` | Bearer | – | `{ enquiries: [enquiry], count, page, pages, statusCounts: { new, in_progress, closed } }` |
+| `GET /api/admin/enquiries/<reference>` | Bearer | – | `{ enquiry }` |
+| `PATCH /api/admin/enquiries/<reference>` | Bearer | `{ status?, notes? }` | `{ enquiry }` |
 
 - **Admins** are `accounts.User` records (a custom user model with email as the unique, case-insensitive login field) with `is_staff` set.
 - **Tokens** are sent as `Authorization: Bearer <token>`. Each admin has one token; signing in replaces it,
@@ -52,6 +55,9 @@ Errors are a non-2xx status with `{ "error": "<message for the user>", "fields":
   `PASSWORD_RESET_TIMEOUT` seconds (default 1 hour) and stop working once used, or once the admin signs in again.
   A successful reset signs the admin out everywhere. Django's password validators apply.
 - **Enquiries**: a filled-in `website` honeypot gets a normal-looking response but nothing is stored.
+  Admins see `{ reference, name, email, phone, country, interest, message, status, notes, createdAt }`,
+  newest first, 20 per page; `status` is `new`, `in_progress` or `closed`, and only `status` and `notes` can be changed.
+  `statusCounts` follows the search but not the status filter.
 - **Rate limits** per IP: login 10/min, forgot password 5/hour, reset 20/hour, enquiries 20/hour.
 
 ## Managing content
