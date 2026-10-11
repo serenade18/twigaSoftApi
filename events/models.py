@@ -74,7 +74,12 @@ class Event(models.Model):
         return self.last_day is not None and self.last_day < (today or timezone.localdate())
 
     def seats_booked(self):
-        return self.bookings.filter(status=Booking.Status.CONFIRMED).aggregate(n=Sum('attendees'))['n'] or 0
+        """Seats held by bookings that are approved or awaiting approval (pending bookings hold their seats)."""
+        return self.bookings.filter(status__in=Booking.HOLDS_SEATS).aggregate(n=Sum('attendees'))['n'] or 0
+
+    def runs_on(self, day):
+        """Whether `day` is one of the event's days (tickets can only be checked in then)."""
+        return self.start_date is not None and self.start_date <= day <= (self.end_date or self.start_date)
 
     def seats_left(self, booked=None):
         """Seats still available, or None when the event has no capacity limit."""
@@ -104,6 +109,14 @@ BOOKING_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'  # no 0/O or 1/I
 MAX_ATTENDEES = 20
 
 
+def new_token():
+    return secrets.token_urlsafe(32)
+
+
+def new_ticket_code():
+    return secrets.token_urlsafe(16)
+
+
 def new_booking_reference():
     return f'EVB-{timezone.now():%y%m%d}-' + ''.join(secrets.choice(BOOKING_ALPHABET) for _ in range(5))
 
@@ -112,8 +125,11 @@ class Booking(models.Model):
     """A visitor's seat reservation for an event. No payment is taken."""
 
     class Status(models.TextChoices):
-        CONFIRMED = 'confirmed', 'Confirmed'
+        PENDING = 'pending', 'Pending approval'
+        CONFIRMED = 'confirmed', 'Approved'
         CANCELLED = 'cancelled', 'Cancelled'
+
+    HOLDS_SEATS = [Status.PENDING, Status.CONFIRMED]
 
     reference = models.CharField(max_length=20, unique=True, default=new_booking_reference, editable=False)
     event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name='bookings')
@@ -124,8 +140,11 @@ class Booking(models.Model):
     country = models.CharField(max_length=80)
     attendees = models.PositiveSmallIntegerField(default=1, validators=[MinValueValidator(1), MaxValueValidator(MAX_ATTENDEES)])
     message = models.TextField(max_length=1000, blank=True)
-    status = models.CharField(max_length=20, choices=Status.choices, default=Status.CONFIRMED)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
     notes = models.TextField('internal notes', blank=True)
+    # Secret for the booker's tickets page and PDF link (emailed on approval).
+    access_token = models.CharField(max_length=43, unique=True, default=new_token, editable=False)
+    approved_at = models.DateTimeField(null=True, blank=True, editable=False)
     ip_address = models.GenericIPAddressField(null=True, blank=True, editable=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -146,3 +165,20 @@ class EventDailyViews(models.Model):
     class Meta:
         constraints = [models.UniqueConstraint(fields=['event', 'date'], name='events_daily_views_unique_day')]
         ordering = ['date']
+
+
+class Ticket(models.Model):
+    """One admission (seat) of an approved booking. Its QR code holds `code`, which checks in once, on an event day."""
+
+    booking = models.ForeignKey(Booking, on_delete=models.CASCADE, related_name='tickets')
+    number = models.PositiveSmallIntegerField()
+    code = models.CharField(max_length=32, unique=True, default=new_ticket_code, editable=False)
+    checked_in_at = models.DateTimeField(null=True, blank=True)
+    checked_in_by = models.ForeignKey('accounts.User', null=True, blank=True, on_delete=models.SET_NULL, related_name='+')
+
+    class Meta:
+        ordering = ['booking', 'number']
+        constraints = [models.UniqueConstraint(fields=['booking', 'number'], name='events_ticket_unique_number')]
+
+    def __str__(self):
+        return f'{self.booking.reference} #{self.number}'

@@ -81,14 +81,24 @@ class AdminBookingSerializer(serializers.ModelSerializer):
     """A booking as staff see it; only status and internal notes can be changed."""
 
     createdAt = serializers.DateTimeField(source='created_at', read_only=True)
+    approvedAt = serializers.DateTimeField(source='approved_at', read_only=True)
+    ticketsUrl = serializers.SerializerMethodField()
+    checkedIn = serializers.SerializerMethodField()
     eventId = serializers.CharField(source='event_id', read_only=True)
     eventTitle = serializers.CharField(source='event.title', read_only=True)
 
     class Meta:
         model = Booking
         fields = ['reference', 'eventId', 'eventTitle', 'name', 'email', 'phone', 'organisation', 'country', 'attendees', 'message',
-                  'status', 'notes', 'createdAt']
+                  'status', 'notes', 'createdAt', 'approvedAt', 'ticketsUrl', 'checkedIn']
         read_only_fields = ['reference', 'name', 'email', 'phone', 'organisation', 'country', 'attendees', 'message']
+
+    def get_ticketsUrl(self, booking):
+        from .tickets import tickets_url
+        return tickets_url(booking) if booking.status == Booking.Status.CONFIRMED else None
+
+    def get_checkedIn(self, booking):
+        return sum(1 for t in booking.tickets.all() if t.checked_in_at is not None)
 
 
 class AdminEventSerializer(serializers.ModelSerializer):
@@ -133,15 +143,20 @@ class AdminEventSerializer(serializers.ModelSerializer):
 
     def get_stats(self, event):
         # List views annotate these to avoid a query per event; single events compute them.
-        bookings = getattr(event, 'confirmed_bookings', None)
+        # "bookings" are those holding seats (approved or awaiting approval); cancelled ones don't count.
+        bookings = getattr(event, 'active_bookings', None)
         if bookings is None:
-            bookings = event.bookings.filter(status=Booking.Status.CONFIRMED).count()
+            bookings = event.bookings.filter(status__in=Booking.HOLDS_SEATS).count()
+        pending = getattr(event, 'pending_bookings', None)
+        if pending is None:
+            pending = event.bookings.filter(status=Booking.Status.PENDING).count()
         seats = getattr(event, 'seats_booked_total', None)
         if seats is None:
             seats = event.seats_booked()
         return {
             'views': event.view_count,
             'bookings': bookings,
+            'pending': pending,
             'seatsBooked': seats,
             'seatsLeft': event.seats_left(booked=seats),
         }

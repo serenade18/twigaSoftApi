@@ -165,17 +165,18 @@ class BookingTests(APITestCase):
         Event.objects.filter(pk=self.event.pk).update(is_published=False)
         self.assertEqual(self.client.get('/api/events/forum').status_code, 404)
 
-    def test_books_seats_and_emails_a_confirmation(self):
+    def test_books_seats_pending_approval_and_emails_a_receipt(self):
         with self.captureOnCommitCallbacks(execute=True):  # the email goes out once the booking is committed
             response = self.book()
         self.assertEqual(response.status_code, 201)
         self.assertRegex(response.data['reference'], r'^EVB-\d{6}-[A-Z2-9]{5}$')
         booking = Booking.objects.get()
-        self.assertEqual((booking.event, booking.attendees, booking.status), (self.event, 2, 'confirmed'))
+        self.assertEqual((booking.event, booking.attendees, booking.status), (self.event, 2, 'pending'))
+        self.assertEqual(response.data['status'], 'pending')
         self.assertEqual(len(mail.outbox), 1)
         self.assertEqual(mail.outbox[0].to, ['amina@example.com'])
         self.assertIn(booking.reference, mail.outbox[0].body)
-        self.assertIn('nothing to pay', mail.outbox[0].body)
+        self.assertIn('Once it is approved we will email your tickets', mail.outbox[0].body)
         self.assertEqual(self.client.get('/api/events/forum').data['event']['seatsLeft'], 3)
 
     def test_enforces_capacity_and_one_booking_per_email(self):
@@ -224,12 +225,12 @@ class AdminBookingTests(APITestCase):
         self.client.force_authenticate(get_user_model().objects.create_user('staff@example.com', 'x', is_staff=True))
         self.event = Event.objects.create(slug='forum', title='Forum', location='Nairobi', organiser='x', summary='x',
                                           start_date='2099-05-01', capacity=10, view_count=40)
-        self.amina = Booking.objects.create(event=self.event, name='Amina', email='a@example.com', country='Kenya', attendees=3)
+        self.amina = Booking.objects.create(event=self.event, name='Amina', email='a@example.com', country='Kenya', attendees=3, status='confirmed')
         Booking.objects.create(event=self.event, name='Omar', email='o@example.com', country='Oman', attendees=2, status='cancelled')
 
     def test_event_stats_in_admin_list_and_detail(self):
         listed = next(e for e in self.client.get('/api/admin/events').data['events'] if e['slug'] == 'forum')
-        expected = {'views': 40, 'bookings': 1, 'seatsBooked': 3, 'seatsLeft': 7}
+        expected = {'views': 40, 'bookings': 1, 'pending': 0, 'seatsBooked': 3, 'seatsLeft': 7}
         self.assertEqual(listed['stats'], expected)
         self.assertEqual(self.client.get(f'/api/admin/events/{self.event.pk}').data['event']['stats'], expected)
 
@@ -237,7 +238,7 @@ class AdminBookingTests(APITestCase):
         url = f'/api/admin/events/{self.event.pk}/bookings'
         data = self.client.get(url).data
         self.assertEqual([b['name'] for b in data['bookings']], ['Omar', 'Amina'])
-        self.assertEqual(data['statusCounts'], {'confirmed': 1, 'cancelled': 1})
+        self.assertEqual(data['statusCounts'], {'pending': 0, 'confirmed': 1, 'cancelled': 1})
         self.assertEqual([b['name'] for b in self.client.get(url, {'status': 'confirmed', 'search': 'kenya'}).data['bookings']], ['Amina'])
         csv_response = self.client.get(url, {'export': 'csv'})
         self.assertEqual(csv_response['Content-Type'], 'text/csv; charset=utf-8')
@@ -279,7 +280,7 @@ class AdminPerformanceTests(APITestCase):
         self.assertEqual(data['daily'][-1], {'date': date.today().isoformat(), 'views': 4, 'bookings': 1, 'seats': 3})
         self.assertEqual(sum(d['views'] for d in data['daily']), 20)
         self.assertEqual(data['views'], {'total': 50, 'lastWeek': 10})
-        self.assertEqual(data['bookings'], {'confirmed': 1, 'cancelled': 1, 'seats': 3})
+        self.assertEqual(data['bookings'], {'active': 1, 'pending': 1, 'cancelled': 1, 'seats': 3})
         week = self.client.get(f'/api/admin/events/{self.event.pk}/performance', {'days': '7'}).data
         self.assertEqual(sum(d['views'] for d in week['daily']), 10)
 
@@ -288,9 +289,9 @@ class AdminPerformanceTests(APITestCase):
         Booking.objects.create(event=other, name='C', email='c@example.com', country='x')
         data = self.client.get('/api/admin/bookings').data
         self.assertEqual([b['name'] for b in data['bookings']], ['C', 'B', 'A'])
-        self.assertEqual(data['statusCounts'], {'confirmed': 2, 'cancelled': 1})
+        self.assertEqual(data['statusCounts'], {'pending': 2, 'confirmed': 0, 'cancelled': 1})
         self.assertEqual([e['title'] for e in data['events']], ['Expo', 'Forum'])
-        filtered = self.client.get('/api/admin/bookings', {'event': self.event.pk, 'status': 'confirmed'}).data
+        filtered = self.client.get('/api/admin/bookings', {'event': self.event.pk, 'status': 'pending'}).data
         self.assertEqual([b['name'] for b in filtered['bookings']], ['A'])
         self.assertEqual(filtered['bookings'][0]['eventTitle'], 'Forum')
 
@@ -299,3 +300,109 @@ class AdminPerformanceTests(APITestCase):
         self.assertTrue(response.data['event']['isFeatured'])
         public = next(e for e in self.client.get('/api/events').data['events'] if e['slug'] == 'forum')
         self.assertTrue(public['isFeatured'])
+
+
+@override_settings(FRONTEND_URL='https://site.test', EVENT_TIME_ZONE='UTC')
+class ApprovalAndTicketTests(APITestCase):
+    def setUp(self):
+        self.staff = get_user_model().objects.create_user('staff@example.com', 'x', is_staff=True)
+        self.client.force_authenticate(self.staff)
+        self.event = Event.objects.create(slug='forum', title='Nairobi Forum', location='Nairobi', organiser='x', summary='x',
+                                          start_date=date.today(), capacity=4)
+        self.booking = Booking.objects.create(event=self.event, name='Amina', email='a@example.com', country='Kenya', attendees=2)
+        self.url = f'/api/admin/bookings/{self.booking.reference}'
+
+    def approve(self):
+        with self.captureOnCommitCallbacks(execute=True):
+            return self.client.patch(self.url, {'status': 'confirmed'}, format='json')
+
+    def test_pending_bookings_hold_seats(self):
+        self.assertEqual(self.event.seats_left(), 2)
+        self.assertEqual(self.client.get('/api/events/forum').data['event']['seatsLeft'], 2)
+
+    def test_approval_issues_tickets_and_emails_pdf_and_link(self):
+        response = self.approve()
+        self.assertEqual(response.status_code, 200)
+        booking = response.data['booking']
+        self.assertEqual(booking['status'], 'confirmed')
+        self.assertIsNotNone(booking['approvedAt'])
+        self.booking.refresh_from_db()
+        self.assertEqual(booking['ticketsUrl'], f'https://site.test/tickets/{self.booking.access_token}')
+        self.assertEqual(self.booking.tickets.count(), 2)
+        self.assertEqual(len(mail.outbox), 1)
+        message = mail.outbox[0]
+        self.assertIn(booking['ticketsUrl'], message.body)
+        name, content, mimetype = message.attachments[0]
+        self.assertEqual((name, mimetype), (f'tickets-{self.booking.reference}.pdf', 'application/pdf'))
+        self.assertTrue(content.startswith(b'%PDF'))
+        # Approving again doesn't resend or reissue.
+        self.approve()
+        self.assertEqual((len(mail.outbox), self.booking.tickets.count()), (1, 2))
+
+    def test_tickets_page_and_pdf_by_token(self):
+        self.client.force_authenticate(None)
+        token = self.booking.access_token
+        pending = self.client.get(f'/api/tickets/{token}').data
+        self.assertEqual((pending['status'], pending['tickets']), ('pending', []))
+        self.assertEqual(self.client.get(f'/api/tickets/{token}/pdf').status_code, 404)
+        self.client.force_authenticate(self.staff)
+        self.approve()
+        self.client.force_authenticate(None)
+        data = self.client.get(f'/api/tickets/{token}').data
+        self.assertEqual([t['number'] for t in data['tickets']], [1, 2])
+        self.assertTrue(data['tickets'][0]['qr'].startswith('AGXT1:'))
+        pdf = self.client.get(f'/api/tickets/{token}/pdf')
+        self.assertEqual(pdf['Content-Type'], 'application/pdf')
+        self.assertEqual(self.client.get('/api/tickets/wrong-token').status_code, 404)
+
+    def test_check_in_once_on_the_event_day(self):
+        self.approve()
+        qr = self.client.get(f'/api/tickets/{self.booking.access_token}').data['tickets'][0]['qr']
+        first = self.client.post('/api/admin/check-in', {'code': qr}, format='json')
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(first.data['result'], 'admitted')
+        self.assertEqual((first.data['ticket']['number'], first.data['ticket']['eventCheckedIn'], first.data['ticket']['eventTickets']), (1, 1, 2))
+        again = self.client.post('/api/admin/check-in', {'code': qr}, format='json')
+        self.assertEqual((again.status_code, again.data['result']), (409, 'already_used'))
+        ticket = self.booking.tickets.get(number=1)
+        self.assertEqual(ticket.checked_in_by, self.staff)
+
+    def test_check_in_refuses_other_days_cancelled_and_unknown_codes(self):
+        from datetime import timedelta
+        self.approve()
+        code = self.booking.tickets.get(number=1).code
+        Event.objects.filter(pk=self.event.pk).update(start_date=date.today() + timedelta(days=1))
+        early = self.client.post('/api/admin/check-in', {'code': code}, format='json')
+        self.assertEqual((early.status_code, early.data['result']), (400, 'wrong_day'))
+        Event.objects.filter(pk=self.event.pk).update(start_date=date.today() - timedelta(days=1), end_date=date.today())
+        Booking.objects.filter(pk=self.booking.pk).update(status='cancelled')
+        self.assertEqual(self.client.post('/api/admin/check-in', {'code': code}, format='json').data['result'], 'cancelled')
+        self.assertEqual(self.client.post('/api/admin/check-in', {'code': 'AGXT1:nope'}, format='json').data['result'], 'invalid')
+        self.assertIn('code', self.client.post('/api/admin/check-in', {'code': ''}, format='json').data['fields'])
+
+    def test_multi_day_events_admit_on_any_day(self):
+        from datetime import timedelta
+        Event.objects.filter(pk=self.event.pk).update(start_date=date.today() - timedelta(days=1), end_date=date.today() + timedelta(days=1))
+        self.approve()
+        code = self.booking.tickets.get(number=2).code
+        self.assertEqual(self.client.post('/api/admin/check-in', {'code': code}, format='json').status_code, 200)
+
+    def test_cancel_emails_and_restore_checks_seats(self):
+        self.approve()
+        with self.captureOnCommitCallbacks(execute=True):
+            self.client.patch(self.url, {'status': 'cancelled'}, format='json')
+        self.assertIn('no longer valid', mail.outbox[-1].body)
+        Booking.objects.create(event=self.event, name='B', email='b@example.com', country='x', attendees=3)
+        restore = self.client.patch(self.url, {'status': 'confirmed'}, format='json')
+        self.assertEqual(restore.status_code, 400)
+        self.assertIn('Only 1 seat left', restore.data['error'])
+
+    def test_resend_tickets(self):
+        self.assertEqual(self.client.post(f'{self.url}/resend-tickets').status_code, 400)
+        self.approve()
+        self.assertEqual(self.client.post(f'{self.url}/resend-tickets').status_code, 200)
+        self.assertEqual(len(mail.outbox), 2)
+
+    def test_check_in_requires_staff(self):
+        self.client.force_authenticate(get_user_model().objects.create_user('v@example.com', 'x'))
+        self.assertEqual(self.client.post('/api/admin/check-in', {'code': 'x'}, format='json').status_code, 403)

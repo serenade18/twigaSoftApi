@@ -24,8 +24,8 @@ class StatsTests(APITestCase):
         User.objects.create_user('gone@example.com', 'x', is_staff=True, is_active=False)
         User.objects.create_user('visitor@example.com', 'x')
         self.event = Event.objects.create(slug='a', title='A', location='x', period='x', organiser='x', summary='x', view_count=12)
-        Booking.objects.create(event=self.event, name='N', email='n@example.com', country='x', attendees=2)
-        Booking.objects.create(event=self.event, name='M', email='m@example.com', country='x', attendees=1)
+        Booking.objects.create(event=self.event, name='N', email='n@example.com', country='x', attendees=2, status='confirmed')
+        Booking.objects.create(event=self.event, name='M', email='m@example.com', country='x', attendees=1)  # pending
         Booking.objects.create(event=self.event, name='C', email='c@example.com', country='x', status='cancelled')
         Event.objects.create(slug='b', title='B', location='x', period='x', organiser='x', summary='x', is_published=False)
         make_enquiry(0)
@@ -42,7 +42,7 @@ class StatsTests(APITestCase):
         data = self.client.get('/api/admin/stats').data
         self.assertEqual(data['days'], 30)
         published = Event.objects.filter(is_published=True).count()  # includes events seeded by migrations
-        self.assertEqual(data['totals'], {'enquiries': 5, 'awaitingReply': 3, 'publishedEvents': published, 'activeStaff': 1, 'bookings': 2})
+        self.assertEqual(data['totals'], {'enquiries': 5, 'awaitingReply': 3, 'publishedEvents': published, 'activeStaff': 1, 'bookings': 2, 'pendingBookings': 1})
         self.assertEqual(data['period'], {'enquiries': 4, 'previous': 1, 'bookings': 2, 'previousBookings': 0})
         self.assertEqual(data['eventPerformance'][0], {'id': str(self.event.pk), 'title': 'A', 'views': 12, 'bookings': 2, 'seatsBooked': 3})
         self.assertEqual(len(data['eventPerformance']), 1)  # events with no views or bookings are left out

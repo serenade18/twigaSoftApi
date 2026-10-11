@@ -1,9 +1,7 @@
 import csv
-import logging
 from collections import Counter
 from datetime import datetime, time, timedelta
 
-from django.core.mail import send_mail
 from django.core.paginator import Paginator
 from django.db import transaction
 from django.db.models import Count, F, Q, Sum
@@ -18,38 +16,21 @@ from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
-from .models import Booking, Event, EventDailyViews, new_booking_reference
+from .models import Booking, Event, EventDailyViews, Ticket, new_booking_reference
 from .serializers import AdminBookingSerializer, AdminEventSerializer, BookingCreateSerializer, EventDetailSerializer, EventSerializer
+from .tickets import (
+    QR_PREFIX, CheckInError, check_in, issue_tickets, render_tickets_pdf, send_booking_cancelled, send_booking_received, send_tickets,
+)
 
-logger = logging.getLogger(__name__)
-CONFIRMED = Q(bookings__status=Booking.Status.CONFIRMED)
+HOLDS_SEATS = Q(bookings__status__in=Booking.HOLDS_SEATS)
 
 
 def with_booking_stats(events):
     return events.annotate(
-        confirmed_bookings=Count('bookings', filter=CONFIRMED),
-        seats_booked_total=Coalesce(Sum('bookings__attendees', filter=CONFIRMED), 0),
+        active_bookings=Count('bookings', filter=HOLDS_SEATS),
+        pending_bookings=Count('bookings', filter=Q(bookings__status=Booking.Status.PENDING)),
+        seats_booked_total=Coalesce(Sum('bookings__attendees', filter=HOLDS_SEATS), 0),
     )
-
-
-def send_booking_confirmation(booking):
-    event = booking.event
-    seats = f'{booking.attendees} seat' + ('s' if booking.attendees != 1 else '')
-    try:
-        send_mail(
-            subject=f'Booking confirmed: {event.title} ({booking.reference})',
-            message=(
-                f'Hello {booking.name},\n\n'
-                f'Your booking for {event.title} is confirmed.\n\n'
-                f'Reference: {booking.reference}\nSeats: {seats}\nWhen: {event.period}\nWhere: {event.location}\n\n'
-                'There is nothing to pay now. We will be in touch with participation details before the event.\n'
-                'If your plans change, reply to this email with your reference.\n\nAFRIGULF Exchange'
-            ),
-            from_email=None,
-            recipient_list=[booking.email],
-        )
-    except Exception:
-        logger.exception('Could not send booking confirmation %s', booking.reference)
 
 
 class EventListView(APIView):
@@ -100,7 +81,8 @@ class EventBookingView(APIView):
         data = serializer.validated_data
         if data.get('website'):
             # Looks like a bot: answer as if it worked, but don't store anything.
-            return Response({'reference': new_booking_reference(), 'attendees': data['attendees']}, status=status.HTTP_201_CREATED)
+            return Response({'reference': new_booking_reference(), 'attendees': data['attendees'], 'status': Booking.Status.PENDING},
+                            status=status.HTTP_201_CREATED)
 
         with transaction.atomic():
             # Lock the event so two visitors can't both take the last seats.
@@ -111,12 +93,12 @@ class EventBookingView(APIView):
             left = event.seats_left()
             if left is not None and data['attendees'] > left:
                 raise serializers.ValidationError({'attendees': [f'Only {left} seat{"s" if left != 1 else ""} left.']})
-            if event.bookings.filter(email__iexact=data['email'], status=Booking.Status.CONFIRMED).exists():
+            if event.bookings.filter(email__iexact=data['email'], status__in=Booking.HOLDS_SEATS).exists():
                 raise serializers.ValidationError({'email': ['This email already has a booking for this event. Check your confirmation email.']})
             booking = serializer.save(event=event, ip_address=request.META.get('REMOTE_ADDR'))
-            transaction.on_commit(lambda: send_booking_confirmation(booking))
+            transaction.on_commit(lambda: send_booking_received(booking))
 
-        return Response({'reference': booking.reference, 'attendees': booking.attendees}, status=status.HTTP_201_CREATED)
+        return Response({'reference': booking.reference, 'attendees': booking.attendees, 'status': booking.status}, status=status.HTTP_201_CREATED)
 
 
 class AdminEventListView(APIView):
@@ -171,7 +153,7 @@ class AdminEventBookingsView(APIView):
 
     def get(self, request, pk):
         event = get_object_or_404(Event, pk=pk)
-        bookings = event.bookings.select_related('event')
+        bookings = event.bookings.select_related('event').prefetch_related('tickets')
         search = request.query_params.get('search', '').strip()
         if search:
             bookings = bookings.filter(Q(reference__icontains=search) | Q(name__icontains=search) | Q(email__icontains=search)
@@ -199,19 +181,114 @@ class AdminEventBookingsView(APIView):
 
 
 class AdminBookingDetailView(APIView):
-    def patch(self, request, reference):
-        booking = get_object_or_404(Booking.objects.select_related('event'), reference=reference)
-        serializer = AdminBookingSerializer(booking, data=request.data, partial=True)
-        serializer.is_valid(raise_exception=True)
-        serializer.save()
-        return Response({'booking': serializer.data})
+    """Approve (status `confirmed`), decline/cancel (`cancelled`) or annotate a booking. Approval issues and emails the tickets."""
 
+    def patch(self, request, reference):
+        with transaction.atomic():
+            booking = get_object_or_404(Booking.objects.select_for_update().select_related('event'), reference=reference)
+            previous = booking.status
+            serializer = AdminBookingSerializer(booking, data=request.data, partial=True)
+            serializer.is_valid(raise_exception=True)
+            new_status = serializer.validated_data.get('status', previous)
+            if new_status == Booking.Status.CONFIRMED and previous != Booking.Status.CONFIRMED:
+                if previous == Booking.Status.CANCELLED:
+                    # Restoring takes its seats back, so check they're still free.
+                    left = booking.event.seats_left()
+                    if left is not None and booking.attendees > left:
+                        raise serializers.ValidationError(f'Only {left} seat{"s" if left != 1 else ""} left, so this booking can’t be restored.')
+                booking = serializer.save(approved_at=timezone.now())
+                issue_tickets(booking)
+                transaction.on_commit(lambda: send_tickets(booking))
+            elif new_status == Booking.Status.CANCELLED and previous != Booking.Status.CANCELLED:
+                booking = serializer.save()
+                was_approved = previous == Booking.Status.CONFIRMED
+                transaction.on_commit(lambda: send_booking_cancelled(booking, was_approved))
+            else:
+                booking = serializer.save()
+        return Response({'booking': AdminBookingSerializer(booking).data})
+
+
+class AdminResendTicketsView(APIView):
+    def post(self, request, reference):
+        booking = get_object_or_404(Booking.objects.select_related('event'), reference=reference)
+        if booking.status != Booking.Status.CONFIRMED:
+            raise serializers.ValidationError('Only approved bookings have tickets to send.')
+        send_tickets(booking)
+        return Response({'detail': f'Tickets sent to {booking.email}.'})
+
+
+class TicketsView(APIView):
+    """The booker's tickets page (reached from the approval email). The token in the URL is the only credential."""
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, request, token):
+        booking = get_object_or_404(Booking.objects.select_related('event'), access_token=token)
+        approved = booking.status == Booking.Status.CONFIRMED
+        event = booking.event
+        return Response({
+            'reference': booking.reference,
+            'name': booking.name,
+            'status': booking.status,
+            'attendees': booking.attendees,
+            'event': {'title': event.title, 'slug': event.slug, 'period': event.period, 'location': event.location,
+                      'organiser': event.organiser, 'imageUrl': event.cover.url if event.cover else None},
+            'tickets': [
+                {'number': t.number, 'qr': QR_PREFIX + t.code, 'checkedInAt': t.checked_in_at}
+                for t in (issue_tickets(booking) if approved else [])
+            ],
+        })
+
+
+class TicketsPdfView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, request, token):
+        booking = get_object_or_404(Booking.objects.select_related('event'), access_token=token, status=Booking.Status.CONFIRMED)
+        response = HttpResponse(render_tickets_pdf(booking), content_type='application/pdf')
+        response['Content-Disposition'] = f'attachment; filename="tickets-{booking.reference}.pdf"'
+        return response
+
+
+class CheckInView(APIView):
+    """Scan a ticket at the door. Staff only; each ticket works once, on an event day."""
+
+    def post(self, request):
+        code = str(request.data.get('code', ''))
+        if not code.strip():
+            raise serializers.ValidationError({'code': ['Scan a QR code or enter a ticket code.']})
+        try:
+            ticket = check_in(code, request.user)
+        except CheckInError as error:
+            body = {'error': str(error), 'result': error.result}
+            if error.ticket is not None:
+                body['ticket'] = _ticket_summary(error.ticket)
+            return Response(body, status=status.HTTP_409_CONFLICT if error.result == 'already_used' else status.HTTP_400_BAD_REQUEST)
+        return Response({'result': 'admitted', 'ticket': _ticket_summary(ticket)})
+
+
+def _ticket_summary(ticket):
+    booking, event = ticket.booking, ticket.booking.event
+    admitted = Ticket.objects.filter(booking__event=event, booking__status=Booking.Status.CONFIRMED, checked_in_at__isnull=False).count()
+    issued = Ticket.objects.filter(booking__event=event, booking__status=Booking.Status.CONFIRMED).count()
+    return {
+        'number': ticket.number,
+        'of': booking.attendees,
+        'name': booking.name,
+        'reference': booking.reference,
+        'event': event.title,
+        'checkedInAt': ticket.checked_in_at,
+        'eventCheckedIn': admitted,
+        'eventTickets': issued,
+    }
 
 PERFORMANCE_RANGES = {'7': 7, '30': 30, '90': 90}
 
 
 class AdminEventPerformanceView(APIView):
-    """Views and seats booked per day for one event over the last `days` days (7, 30 or 90; default 30)."""
+    """Views and seats booked (pending or approved) per day for one event over the last `days` days (7, 30 or 90; default 30)."""
 
     def get(self, request, pk):
         event = get_object_or_404(Event, pk=pk)
@@ -221,10 +298,10 @@ class AdminEventPerformanceView(APIView):
 
         views = dict(event.daily_views.filter(date__gte=first_day).values_list('date', 'views'))
         seats, bookings = Counter(), Counter()
-        confirmed = event.bookings.filter(status=Booking.Status.CONFIRMED)
+        active = event.bookings.filter(status__in=Booking.HOLDS_SEATS)
         # Bucket in Python (not TruncDate) so it works without MySQL's time zone tables.
         start = timezone.make_aware(datetime.combine(first_day, time.min))
-        for created, attendees in confirmed.filter(created_at__gte=start).values_list('created_at', 'attendees'):
+        for created, attendees in active.filter(created_at__gte=start).values_list('created_at', 'attendees'):
             day = timezone.localdate(created)
             seats[day] += attendees
             bookings[day] += 1
@@ -239,7 +316,8 @@ class AdminEventPerformanceView(APIView):
                 'lastWeek': event.daily_views.filter(date__gte=last_week).aggregate(n=Coalesce(Sum('views'), 0))['n'],
             },
             'bookings': {
-                'confirmed': confirmed.count(),
+                'active': active.count(),
+                'pending': event.bookings.filter(status=Booking.Status.PENDING).count(),
                 'cancelled': event.bookings.filter(status=Booking.Status.CANCELLED).count(),
                 'seats': event.seats_booked(),
             },
@@ -252,7 +330,7 @@ class AdminBookingListView(APIView):
     page_size = 25
 
     def get(self, request):
-        bookings = Booking.objects.select_related('event')
+        bookings = Booking.objects.select_related('event').prefetch_related('tickets')
         event_id = request.query_params.get('event', '')
         if event_id.isdigit():
             bookings = bookings.filter(event_id=event_id)

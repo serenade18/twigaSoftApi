@@ -134,6 +134,9 @@ ADMIN_TOKEN_TTL = timedelta(hours=int(os.environ.get('ADMIN_TOKEN_TTL_HOURS', '1
 # Password reset links expire after this many seconds.
 PASSWORD_RESET_TIMEOUT = int(os.environ.get('PASSWORD_RESET_TIMEOUT', '3600'))
 
+# Events happen in this time zone; it decides which day a ticket can be checked in.
+EVENT_TIME_ZONE = os.environ.get('EVENT_TIME_ZONE', 'Asia/Dubai')
+
 # Public site address, used to build password reset links.
 FRONTEND_URL = os.environ.get('FRONTEND_URL', 'http://localhost:5173').rstrip('/')
 

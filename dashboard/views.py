@@ -31,10 +31,10 @@ class StatsView(APIView):
         start = timezone.make_aware(datetime.combine(first_day, time.min))
         previous_start = start - timedelta(days=days)
 
-        bookings = Booking.objects.filter(status=Booking.Status.CONFIRMED)
+        bookings = Booking.objects.filter(status__in=Booking.HOLDS_SEATS)  # approved or awaiting approval
         # Events with any activity, best performing first (all time: views aren't recorded per day).
-        performance = with_booking_stats(Event.objects.all()).filter(Q(view_count__gt=0) | Q(confirmed_bookings__gt=0))
-        performance = performance.order_by('-confirmed_bookings', '-view_count', 'title')[:8]
+        performance = with_booking_stats(Event.objects.all()).filter(Q(view_count__gt=0) | Q(active_bookings__gt=0))
+        performance = performance.order_by('-active_bookings', '-view_count', 'title')[:8]
 
         in_range = Enquiry.objects.filter(created_at__gte=start)
         # Bucket in Python rather than with TruncDate, so it works without MySQL's time zone tables.
@@ -49,6 +49,7 @@ class StatsView(APIView):
                 'publishedEvents': Event.objects.filter(is_published=True).count(),
                 'activeStaff': get_user_model().objects.filter(is_staff=True, is_active=True).count(),
                 'bookings': bookings.count(),
+                'pendingBookings': bookings.filter(status=Booking.Status.PENDING).count(),
             },
             'period': {
                 'enquiries': sum(per_day.values()),
@@ -57,7 +58,7 @@ class StatsView(APIView):
                 'previousBookings': bookings.filter(created_at__gte=previous_start, created_at__lt=start).count(),
             },
             'eventPerformance': [
-                {'id': str(e.pk), 'title': e.title, 'views': e.view_count, 'bookings': e.confirmed_bookings, 'seatsBooked': e.seats_booked_total}
+                {'id': str(e.pk), 'title': e.title, 'views': e.view_count, 'bookings': e.active_bookings, 'seatsBooked': e.seats_booked_total}
                 for e in performance
             ],
             'daily': [
